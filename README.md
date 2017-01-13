@@ -1,4 +1,3 @@
-gocore
-======
+# core
+Useful functions for Golang.
 
-My necessary function for Go.
