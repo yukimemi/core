@@ -3,6 +3,7 @@ package core
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -17,6 +18,12 @@ type Cmd struct {
 	Dir  string
 	Name string
 	Cwd  string
+
+	Args    []string
+	CmdLine string
+
+	Info   os.FileInfo
+	ExeCmd *exec.Cmd
 }
 
 // IsMatchStrs is whether str match or not.
@@ -75,29 +82,30 @@ func GetCmdPath(cmd string) (string, error) {
 }
 
 // GetCmdInfo return struct of Cmd.
-func GetCmdInfo() (Cmd, error) {
+func GetCmdInfo(path string) (Cmd, error) {
 
 	var (
-		ci  Cmd
 		err error
+		ci  Cmd
 	)
 
-	// Get cmd info.
-	cmdFile, err := GetCmdPath(os.Args[0])
+	ci.File, err = GetCmdPath(path)
 	if err != nil {
 		return ci, err
 	}
-	cwd, err := os.Getwd()
+	ci.Cwd, err = os.Getwd()
 	if err != nil {
 		return ci, err
 	}
-	cmdDir := filepath.Dir(cmdFile)
-	return Cmd{
-		File: cmdFile,
-		Dir:  cmdDir,
-		Name: BaseName(cmdFile),
-		Cwd:  cwd,
-	}, nil
+	ci.Dir = filepath.Dir(ci.File)
+	ci.Name = BaseName(ci.File)
+
+	ci.Info, err = os.Stat(ci.File)
+	if err != nil {
+		return ci, err
+	}
+
+	return ci, nil
 }
 
 // FailOnError is fail if err occured.
@@ -121,4 +129,35 @@ func GetGlobArgs(args []string) ([]string, error) {
 	}
 
 	return a, nil
+}
+
+// CmdStart start cmdFile.
+func CmdStart(cmd Cmd) (Cmd, error) {
+
+	var (
+		err    error
+		stdOut io.ReadCloser
+		stdErr io.ReadCloser
+	)
+
+	cmd.ExeCmd = exec.Command(cmd.File, cmd.Args...)
+	stdOut, err = cmd.ExeCmd.StdoutPipe()
+	if err != nil {
+		return cmd, err
+	}
+	stdErr, err = cmd.ExeCmd.StderrPipe()
+	if err != nil {
+		return cmd, err
+	}
+
+	fmt.Println("Exec:", cmd.File, "Args:", cmd.Args)
+	err = cmd.ExeCmd.Start()
+	if err != nil {
+		return cmd, err
+	}
+
+	go ScanLoop(bufio.NewScanner(stdOut))
+	go ScanLoop(bufio.NewScanner(stdErr))
+
+	return cmd, nil
 }
