@@ -10,6 +10,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"golang.org/x/text/encoding"
+	"golang.org/x/text/transform"
 )
 
 // Cmd is command infomation.
@@ -24,6 +27,13 @@ type Cmd struct {
 
 	Info   os.FileInfo
 	ExeCmd *exec.Cmd
+	StdIn  io.WriteCloser
+	StdOut io.ReadCloser
+	StdErr io.ReadCloser
+
+	StdInEnc  *encoding.Decoder
+	StdOutEnc *encoding.Decoder
+	StdErrEnc *encoding.Decoder
 }
 
 // IsMatchStrs is whether str match or not.
@@ -134,30 +144,39 @@ func GetGlobArgs(args []string) ([]string, error) {
 // CmdStart start cmdFile.
 func CmdStart(cmd Cmd) (Cmd, error) {
 
-	var (
-		err    error
-		stdOut io.ReadCloser
-		stdErr io.ReadCloser
-	)
+	var err error
 
 	cmd.ExeCmd = exec.Command(cmd.File, cmd.Args...)
-	stdOut, err = cmd.ExeCmd.StdoutPipe()
+	cmd.StdOut, err = cmd.ExeCmd.StdoutPipe()
 	if err != nil {
 		return cmd, err
 	}
-	stdErr, err = cmd.ExeCmd.StderrPipe()
+	cmd.StdErr, err = cmd.ExeCmd.StderrPipe()
+	if err != nil {
+		return cmd, err
+	}
+	cmd.StdIn, err = cmd.ExeCmd.StdinPipe()
 	if err != nil {
 		return cmd, err
 	}
 
-	fmt.Println("Exec:", cmd.File, "Args:", cmd.Args)
+	if cmd.StdOutEnc == nil {
+		go ScanLoop(bufio.NewScanner(cmd.StdOut))
+	} else {
+		go ScanLoop(bufio.NewScanner(transform.NewReader(cmd.StdOut, cmd.StdOutEnc)))
+	}
+
+	if cmd.StdErrEnc == nil {
+		go ScanLoop(bufio.NewScanner(cmd.StdErr))
+	} else {
+		go ScanLoop(bufio.NewScanner(transform.NewReader(cmd.StdErr, cmd.StdErrEnc)))
+	}
+
+	/* fmt.Println("Exec:", cmd.File, "Args:", cmd.Args) */
 	err = cmd.ExeCmd.Start()
 	if err != nil {
 		return cmd, err
 	}
-
-	go ScanLoop(bufio.NewScanner(stdOut))
-	go ScanLoop(bufio.NewScanner(stdErr))
 
 	return cmd, nil
 }
