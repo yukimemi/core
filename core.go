@@ -2,38 +2,38 @@ package core
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"log"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 
 	"golang.org/x/text/encoding"
-	"golang.org/x/text/transform"
 )
 
 // Cmd is command infomation.
 type Cmd struct {
-	File string
-	Dir  string
-	Name string
-	Cwd  string
-
-	Args    []string
+	Cmd     *exec.Cmd
 	CmdLine string
 
-	Info   os.FileInfo
-	ExeCmd *exec.Cmd
-	StdIn  io.WriteCloser
-	StdOut io.ReadCloser
-	StdErr io.ReadCloser
+	Stdin  bytes.Buffer
+	Stdout bytes.Buffer
+	Stderr bytes.Buffer
 
-	StdInEnc  *encoding.Decoder
-	StdOutEnc *encoding.Decoder
-	StdErrEnc *encoding.Decoder
+	ExitError error
+	ExitCode  int
+
+	StdinPipe  io.WriteCloser
+	StdoutPipe io.ReadCloser
+	StderrPipe io.ReadCloser
+
+	StdinEnc  *encoding.Decoder
+	StdoutEnc *encoding.Decoder
+	StderrEnc *encoding.Decoder
 }
 
 // IsMatchStrs is whether str match or not.
@@ -65,13 +65,26 @@ func CompileStrs(regStrs []string) (*regexp.Regexp, error) {
 }
 
 // ScanLoop is scan and print.
-func ScanLoop(scanner *bufio.Scanner) {
+func ScanLoop(scanner *bufio.Scanner, buf *bytes.Buffer) {
 	for scanner.Scan() {
-		fmt.Println(scanner.Text())
+		t := scanner.Text()
+		buf.WriteString(t)
+	}
+	// if err := scanner.Err(); err != nil {
+	// 	fmt.Fprintln(os.Stderr, err)
+	// }
+}
+
+// ReadToBuf is scan and store buffer.
+func ReadToBuf(scanner *bufio.Scanner) (*bytes.Buffer, error) {
+	buf := new(bytes.Buffer)
+	for scanner.Scan() {
+		buf.WriteString(scanner.Text())
 	}
 	if err := scanner.Err(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		return nil, err
 	}
+	return buf, nil
 }
 
 // BaseName is get file name without extension.
@@ -89,33 +102,6 @@ func GetCmdPath(cmd string) (string, error) {
 		return cmd, nil
 	}
 	return exec.LookPath(cmd)
-}
-
-// GetCmdInfo return struct of Cmd.
-func GetCmdInfo(path string) (Cmd, error) {
-
-	var (
-		err error
-		ci  Cmd
-	)
-
-	ci.File, err = GetCmdPath(path)
-	if err != nil {
-		return ci, err
-	}
-	ci.Cwd, err = os.Getwd()
-	if err != nil {
-		return ci, err
-	}
-	ci.Dir = filepath.Dir(ci.File)
-	ci.Name = BaseName(ci.File)
-
-	ci.Info, err = os.Stat(ci.File)
-	if err != nil {
-		return ci, err
-	}
-
-	return ci, nil
 }
 
 // FailOnError is fail if err occured.
@@ -142,41 +128,90 @@ func GetGlobArgs(args []string) ([]string, error) {
 }
 
 // CmdStart start cmdFile.
-func CmdStart(cmd Cmd) (Cmd, error) {
+func (c *Cmd) CmdStart() error {
 
 	var err error
 
-	cmd.ExeCmd = exec.Command(cmd.File, cmd.Args...)
-	cmd.StdOut, err = cmd.ExeCmd.StdoutPipe()
+	c.StdoutPipe, err = c.Cmd.StdoutPipe()
 	if err != nil {
-		return cmd, err
+		return err
 	}
-	cmd.StdErr, err = cmd.ExeCmd.StderrPipe()
+	c.StderrPipe, err = c.Cmd.StderrPipe()
 	if err != nil {
-		return cmd, err
+		return err
 	}
-	cmd.StdIn, err = cmd.ExeCmd.StdinPipe()
+	c.StdinPipe, err = c.Cmd.StdinPipe()
 	if err != nil {
-		return cmd, err
+		return err
 	}
 
-	if cmd.StdOutEnc == nil {
-		go ScanLoop(bufio.NewScanner(cmd.StdOut))
-	} else {
-		go ScanLoop(bufio.NewScanner(transform.NewReader(cmd.StdOut, cmd.StdOutEnc)))
-	}
+	c.Cmd.Stdout = &c.Stdout
+	c.Cmd.Stderr = &c.Stderr
+	c.Cmd.Stdin = &c.Stdin
 
-	if cmd.StdErrEnc == nil {
-		go ScanLoop(bufio.NewScanner(cmd.StdErr))
-	} else {
-		go ScanLoop(bufio.NewScanner(transform.NewReader(cmd.StdErr, cmd.StdErrEnc)))
-	}
+	// if c.StdoutEnc == nil {
+	// 	go ScanLoop(bufio.NewScanner(c.StdoutPipe))
+	// } else {
+	// 	go ScanLoop(bufio.NewScanner(transform.NewReader(c.StdoutPipe, c.StdoutEnc)))
+	// }
+	//
+	// if c.StderrEnc == nil {
+	// 	go ScanLoop(bufio.NewScanner(c.StderrPipe))
+	// } else {
+	// 	go ScanLoop(bufio.NewScanner(transform.NewReader(c.StderrPipe, c.StderrEnc)))
+	// }
 
-	/* fmt.Println("Exec:", cmd.File, "Args:", cmd.Args) */
-	err = cmd.ExeCmd.Start()
+	err = c.Cmd.Start()
 	if err != nil {
-		return cmd, err
+		return err
 	}
 
-	return cmd, nil
+	return nil
+}
+
+// CmdWait wait command end.
+func (c *Cmd) CmdWait() {
+	c.ExitError = c.Cmd.Wait()
+	c.GetExitCode()
+}
+
+// CmdRun run command.
+func (c *Cmd) CmdRun() error {
+
+	var err error
+
+	err = c.CmdStart()
+	if err != nil {
+		return err
+	}
+
+	c.CmdWait()
+	return nil
+}
+
+// GetExitCode return command ExitCode.
+func (c *Cmd) GetExitCode() {
+	if c.ExitError != nil {
+		if err, ok := c.ExitError.(*exec.ExitError); ok {
+			if s, ok := err.Sys().(syscall.WaitStatus); ok {
+				c.ExitCode = s.ExitStatus()
+			}
+		}
+	}
+}
+
+// SurroundWord surround word.
+func SurroundWord(w string, r rune) string {
+
+	surRune := []rune(w)
+
+	// Check already surrounded.
+	if surRune[0] != r {
+		surRune = append([]rune{r}, surRune...)
+	}
+	if surRune[len(surRune)-1] != r {
+		surRune = append(surRune, r)
+	}
+
+	return string(surRune)
 }

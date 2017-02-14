@@ -135,6 +135,51 @@ func TestGetCmdPath(t *testing.T) {
 	}
 }
 
+// TestSurroundWord test SurroundWord func.
+func TestSurroundWord(t *testing.T) {
+	var (
+		word     string
+		act, exp string
+		sur      rune
+	)
+
+	word = "test"
+	sur = '\''
+	exp = "'test'"
+
+	act = SurroundWord(word, sur)
+	if act != exp {
+		t.Fatalf("Expected: [%s] but actual: [%s]\n", exp, act)
+	}
+
+	word = "test'"
+	sur = '\''
+	exp = "'test'"
+
+	act = SurroundWord(word, sur)
+	if act != exp {
+		t.Fatalf("Expected: [%s] but actual: [%s]\n", exp, act)
+	}
+
+	word = "'test"
+	sur = '\''
+	exp = "'test'"
+
+	act = SurroundWord(word, sur)
+	if act != exp {
+		t.Fatalf("Expected: [%s] but actual: [%s]\n", exp, act)
+	}
+
+	word = "'test'"
+	sur = '\''
+	exp = "'test'"
+
+	act = SurroundWord(word, sur)
+	if act != exp {
+		t.Fatalf("Expected: [%s] but actual: [%s]\n", exp, act)
+	}
+}
+
 // TestMain is entry point.
 func TestMain(m *testing.M) {
 	os.Exit(m.Run())
