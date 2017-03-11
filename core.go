@@ -6,13 +6,16 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"syscall"
 
 	"golang.org/x/text/encoding"
+	"golang.org/x/text/transform"
 )
 
 // Cmd is command infomation.
@@ -34,6 +37,11 @@ type Cmd struct {
 	StdinEnc  *encoding.Decoder
 	StdoutEnc *encoding.Decoder
 	StderrEnc *encoding.Decoder
+
+	StdoutPrint bool
+	StderrPrint bool
+
+	wg sync.WaitGroup
 }
 
 // IsMatchStrs is whether str match or not.
@@ -64,15 +72,28 @@ func CompileStrs(regStrs []string) (*regexp.Regexp, error) {
 	return re, nil
 }
 
-// ScanLoop is scan and print.
-func ScanLoop(scanner *bufio.Scanner, buf *bytes.Buffer) {
+// ScanPrintStdout is scan and print to stdout.
+func ScanPrintStdout(scanner *bufio.Scanner, print bool) {
 	for scanner.Scan() {
-		t := scanner.Text()
-		buf.WriteString(t)
+		if print {
+			fmt.Fprintf(os.Stdout, "%s\n", scanner.Text())
+		}
 	}
-	// if err := scanner.Err(); err != nil {
-	// 	fmt.Fprintln(os.Stderr, err)
-	// }
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+	}
+}
+
+// ScanPrintStderr is scan and print to stderr.
+func ScanPrintStderr(scanner *bufio.Scanner, print bool) {
+	for scanner.Scan() {
+		if print {
+			fmt.Fprintf(os.Stderr, "%s\n", scanner.Text())
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+	}
 }
 
 // ReadToBuf is scan and store buffer.
@@ -136,30 +157,44 @@ func (c *Cmd) CmdStart() error {
 	if err != nil {
 		return err
 	}
+
 	c.StderrPipe, err = c.Cmd.StderrPipe()
 	if err != nil {
 		return err
 	}
+
 	c.StdinPipe, err = c.Cmd.StdinPipe()
 	if err != nil {
 		return err
 	}
 
-	c.Cmd.Stdout = &c.Stdout
-	c.Cmd.Stderr = &c.Stderr
-	c.Cmd.Stdin = &c.Stdin
+	if c.StdoutEnc == nil {
+		c.wg.Add(1)
+		go func() {
+			defer c.wg.Done()
+			ScanPrintStdout(bufio.NewScanner(io.TeeReader(c.StdoutPipe, &c.Stdout)), c.StdoutPrint)
+		}()
+	} else {
+		c.wg.Add(1)
+		go func() {
+			defer c.wg.Done()
+			ScanPrintStdout(bufio.NewScanner(transform.NewReader(io.TeeReader(c.StdoutPipe, &c.Stdout), c.StdoutEnc)), c.StdoutPrint)
+		}()
+	}
 
-	// if c.StdoutEnc == nil {
-	// 	go ScanLoop(bufio.NewScanner(c.StdoutPipe))
-	// } else {
-	// 	go ScanLoop(bufio.NewScanner(transform.NewReader(c.StdoutPipe, c.StdoutEnc)))
-	// }
-	//
-	// if c.StderrEnc == nil {
-	// 	go ScanLoop(bufio.NewScanner(c.StderrPipe))
-	// } else {
-	// 	go ScanLoop(bufio.NewScanner(transform.NewReader(c.StderrPipe, c.StderrEnc)))
-	// }
+	if c.StderrEnc == nil {
+		c.wg.Add(1)
+		go func() {
+			defer c.wg.Done()
+			ScanPrintStderr(bufio.NewScanner(io.TeeReader(c.StderrPipe, &c.Stderr)), c.StderrPrint)
+		}()
+	} else {
+		c.wg.Add(1)
+		go func() {
+			defer c.wg.Done()
+			ScanPrintStderr(bufio.NewScanner(transform.NewReader(io.TeeReader(c.StderrPipe, &c.Stderr), c.StderrEnc)), c.StderrPrint)
+		}()
+	}
 
 	err = c.Cmd.Start()
 	if err != nil {
@@ -171,6 +206,7 @@ func (c *Cmd) CmdStart() error {
 
 // CmdWait wait command end.
 func (c *Cmd) CmdWait() {
+	c.wg.Wait()
 	c.ExitError = c.Cmd.Wait()
 	c.GetExitCode()
 }

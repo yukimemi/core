@@ -1,6 +1,7 @@
 package core
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"runtime"
@@ -178,6 +179,21 @@ func TestSurroundWord(t *testing.T) {
 	if act != exp {
 		t.Fatalf("Expected: [%s] but actual: [%s]\n", exp, act)
 	}
+}
+
+// TestCmdRun is test CmdRun fucn.
+func TestCmdRun(t *testing.T) {
+
+	c := Cmd{Cmd: exec.Command("echo", "hogehoge\nhogehoge")}
+	c.StdoutPrint = true
+	c.StderrPrint = true
+	err := c.CmdStart()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.CmdWait()
+	fmt.Print(c.Stdout.String())
+	fmt.Print(c.Stderr.String())
 }
 
 // TestMain is entry point.
