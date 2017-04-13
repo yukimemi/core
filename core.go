@@ -128,7 +128,7 @@ func GetCmdPath(cmd string) (string, error) {
 // FailOnError is fail if err occured.
 func FailOnError(err error) {
 	if err != nil {
-		log.Fatalln(err)
+		log.Fatalf("%+v\n", err)
 	}
 }
 
@@ -178,7 +178,7 @@ func (c *Cmd) CmdStart() error {
 		c.wg.Add(1)
 		go func() {
 			defer c.wg.Done()
-			ScanPrintStdout(bufio.NewScanner(transform.NewReader(io.TeeReader(c.StdoutPipe, &c.Stdout), c.StdoutEnc)), c.StdoutPrint)
+			ScanPrintStdout(bufio.NewScanner(io.TeeReader(transform.NewReader(c.StdoutPipe, c.StdoutEnc), &c.Stdout)), c.StdoutPrint)
 		}()
 	}
 
@@ -192,7 +192,7 @@ func (c *Cmd) CmdStart() error {
 		c.wg.Add(1)
 		go func() {
 			defer c.wg.Done()
-			ScanPrintStderr(bufio.NewScanner(transform.NewReader(io.TeeReader(c.StderrPipe, &c.Stderr), c.StderrEnc)), c.StderrPrint)
+			ScanPrintStderr(bufio.NewScanner(io.TeeReader(transform.NewReader(c.StderrPipe, c.StderrEnc), &c.Stderr)), c.StderrPrint)
 		}()
 	}
 
