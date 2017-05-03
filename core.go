@@ -14,6 +14,8 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/k0kubun/pp"
+	"github.com/mattn/go-shellwords"
 	"golang.org/x/text/encoding"
 	"golang.org/x/text/transform"
 )
@@ -30,10 +32,6 @@ type Cmd struct {
 	ExitError error
 	ExitCode  int
 
-	StdinPipe  io.WriteCloser
-	StdoutPipe io.ReadCloser
-	StderrPipe io.ReadCloser
-
 	StdinEnc  *encoding.Decoder
 	StdoutEnc *encoding.Decoder
 	StderrEnc *encoding.Decoder
@@ -41,7 +39,10 @@ type Cmd struct {
 	StdoutPrint bool
 	StderrPrint bool
 
-	wg sync.WaitGroup
+	stdinPipe  bool
+	stdoutPipe bool
+	stderrPipe bool
+	Wg         sync.WaitGroup
 }
 
 // IsMatchStrs is whether str match or not.
@@ -70,6 +71,20 @@ func CompileStrs(regStrs []string) (*regexp.Regexp, error) {
 		return nil, err
 	}
 	return re, nil
+}
+
+// ScanWrite is scan and write to io.Writer.
+func ScanWrite(scanner *bufio.Scanner, writer io.Writer, print bool) {
+	for scanner.Scan() {
+		t := scanner.Text()
+		fmt.Fprintf(writer, "%s\n", t)
+		if print {
+			fmt.Println(t)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+	}
 }
 
 // ScanPrintStdout is scan and print to stdout.
@@ -148,57 +163,147 @@ func GetGlobArgs(args []string) ([]string, error) {
 	return a, nil
 }
 
+// NewCmd create Cmd struct pointer.
+func NewCmd(cmdLine string) (*Cmd, error) {
+
+	parseCmd, err := shellwords.Parse(cmdLine)
+	if err != nil {
+		return nil, err
+	}
+	return &Cmd{Cmd: exec.Command(parseCmd[0], parseCmd[1:]...)}, nil
+}
+
+// StdoutPipe return exec.StdoutPipe.
+func (c *Cmd) StdoutPipe() (io.ReadCloser, error) {
+	c.stdoutPipe = true
+	return c.Cmd.StdoutPipe()
+}
+
+// StderrPipe return exec.StderrPipe.
+func (c *Cmd) StderrPipe() (io.ReadCloser, error) {
+	c.stderrPipe = true
+	return c.Cmd.StderrPipe()
+}
+
+// StdinPipe return exec.StdinPipe.
+func (c *Cmd) StdinPipe() (io.WriteCloser, error) {
+	c.stdinPipe = true
+	return c.Cmd.StdinPipe()
+}
+
+// StdoutScanner make bufio.Scanner.
+func (c *Cmd) StdoutScanner() (*bufio.Scanner, error) {
+	c.stdoutPipe = true
+	r, err := c.Cmd.StdoutPipe()
+	if c.StdoutEnc != nil {
+		if err != nil {
+			return nil, err
+		}
+		return bufio.NewScanner(transform.NewReader(r, c.StdoutEnc)), nil
+	}
+	return bufio.NewScanner(r), nil
+}
+
+// StderrScanner make bufio.Scanner.
+func (c *Cmd) StderrScanner() (*bufio.Scanner, error) {
+	c.stderrPipe = true
+	r, err := c.Cmd.StderrPipe()
+	if c.StderrEnc != nil {
+		if err != nil {
+			return nil, err
+		}
+		return bufio.NewScanner(transform.NewReader(r, c.StderrEnc)), nil
+	}
+	return bufio.NewScanner(r), nil
+}
+
 // CmdStart start cmdFile.
 func (c *Cmd) CmdStart() error {
 
 	var err error
 
-	c.StdoutPipe, err = c.Cmd.StdoutPipe()
-	if err != nil {
-		return err
+	// CmdLine check
+	if c.CmdLine != "" {
+		parseCmd, err := shellwords.Parse(c.CmdLine)
+		if err != nil {
+			return err
+		}
+		c.Cmd = exec.Command(parseCmd[0], parseCmd[1:]...)
 	}
 
-	c.StderrPipe, err = c.Cmd.StderrPipe()
-	if err != nil {
-		return err
+	var stdoutPipe, stderrPipe io.ReadCloser
+
+	if !c.stdoutPipe {
+		stdoutPipe, err = c.Cmd.StdoutPipe()
+		if err != nil {
+			return err
+		}
+	}
+	if !c.stderrPipe {
+		stderrPipe, err = c.Cmd.StderrPipe()
+		if err != nil {
+			return err
+		}
 	}
 
-	c.StdinPipe, err = c.Cmd.StdinPipe()
-	if err != nil {
-		return err
-	}
-
-	if c.StdoutEnc == nil {
-		c.wg.Add(1)
-		go func() {
-			defer c.wg.Done()
-			ScanPrintStdout(bufio.NewScanner(io.TeeReader(c.StdoutPipe, &c.Stdout)), c.StdoutPrint)
-		}()
-	} else {
-		c.wg.Add(1)
-		go func() {
-			defer c.wg.Done()
-			ScanPrintStdout(bufio.NewScanner(io.TeeReader(transform.NewReader(c.StdoutPipe, c.StdoutEnc), &c.Stdout)), c.StdoutPrint)
-		}()
-	}
-
-	if c.StderrEnc == nil {
-		c.wg.Add(1)
-		go func() {
-			defer c.wg.Done()
-			ScanPrintStderr(bufio.NewScanner(io.TeeReader(c.StderrPipe, &c.Stderr)), c.StderrPrint)
-		}()
-	} else {
-		c.wg.Add(1)
-		go func() {
-			defer c.wg.Done()
-			ScanPrintStderr(bufio.NewScanner(io.TeeReader(transform.NewReader(c.StderrPipe, c.StderrEnc), &c.Stderr)), c.StderrPrint)
-		}()
-	}
-
+	// Start command.
 	err = c.Cmd.Start()
 	if err != nil {
 		return err
+	}
+
+	scanWrite := func(c *Cmd, r io.ReadCloser, w io.Writer, enc *encoding.Decoder, print bool) {
+		if r == nil {
+			return
+		}
+		c.Wg.Add(1)
+		go func() {
+			defer c.Wg.Done()
+			if enc == nil {
+				ScanWrite(bufio.NewScanner(r), w, print)
+			} else {
+				ScanWrite(bufio.NewScanner(transform.NewReader(r, enc)), w, print)
+			}
+		}()
+	}
+
+	scanWrite(c, stdoutPipe, &c.Stdout, c.StdoutEnc, c.StdoutPrint)
+	scanWrite(c, stderrPipe, &c.Stderr, c.StderrEnc, c.StderrPrint)
+
+	// if c.StdoutEnc == nil {
+	// 	c.wg.Add(1)
+	// 	go func() {
+	// 		defer c.wg.Done()
+	// 		ScanWrite(bufio.NewScanner(c.StdoutPipe), &c.Stdout)
+	// ScanPrintStdout(bufio.NewScanner(io.TeeReader(c.StdoutPipe, &c.Stdout)), c.StdoutPrint)
+	// 	}()
+	// } else {
+	// 	c.wg.Add(1)
+	// 	go func() {
+	// 		defer c.wg.Done()
+	// 		ScanWrite(bufio.NewScanner(transform.NewReader(c.StdoutPipe, c.StdoutEnc)), &c.Stdout)
+	// 		// ScanPrintStdout(bufio.NewScanner(io.TeeReader(transform.NewReader(c.StdoutPipe, c.StdoutEnc), &c.Stdout)), c.StdoutPrint)
+	// 	}()
+	// }
+
+	// if c.StderrEnc == nil {
+	// 	c.wg.Add(1)
+	// 	go func() {
+	// 		defer c.wg.Done()
+	// 		ScanWrite(bufio.NewScanner(c.StderrPipe), &c.Stderr)
+	// 		// ScanPrintStderr(bufio.NewScanner(io.TeeReader(c.StderrPipe, &c.Stderr)), c.StderrPrint)
+	// 	}()
+	// } else {
+	// 	c.wg.Add(1)
+	// 	go func() {
+	// 		defer c.wg.Done()
+	// 		ScanWrite(bufio.NewScanner(transform.NewReader(c.StderrPipe, c.StderrEnc)), &c.Stderr)
+	// 		// ScanPrintStderr(bufio.NewScanner(io.TeeReader(transform.NewReader(c.StderrPipe, c.StderrEnc), &c.Stderr)), c.StderrPrint)
+	// 	}()
+	// }
+
+	if c.CmdLine == "" {
+		c.CmdLine = strings.Join(c.Cmd.Args, " ")
 	}
 
 	return nil
@@ -206,7 +311,7 @@ func (c *Cmd) CmdStart() error {
 
 // CmdWait wait command end.
 func (c *Cmd) CmdWait() {
-	c.wg.Wait()
+	c.Wg.Wait()
 	c.ExitError = c.Cmd.Wait()
 	c.GetExitCode()
 }
@@ -250,4 +355,14 @@ func SurroundWord(w string, r rune) string {
 	}
 
 	return string(surRune)
+}
+
+// PP is wrapper of pp Println.
+func PP(a ...interface{}) (int, error) {
+	return pp.Println(a...)
+}
+
+// PPf is wrapper of pp Printf.
+func PPf(format string, a ...interface{}) (int, error) {
+	return pp.Printf(format, a...)
 }
