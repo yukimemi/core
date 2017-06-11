@@ -223,12 +223,15 @@ func (c *Cmd) CmdStart() error {
 	var err error
 
 	// CmdLine check
-	if c.CmdLine != "" {
+	if c.CmdLine != "" && c.Cmd == nil {
 		parseCmd, err := shellwords.Parse(c.CmdLine)
 		if err != nil {
 			return err
 		}
 		c.Cmd = exec.Command(parseCmd[0], parseCmd[1:]...)
+	}
+	if c.CmdLine == "" {
+		c.CmdLine = strings.Join(c.Cmd.Args, " ")
 	}
 
 	var stdoutPipe, stderrPipe io.ReadCloser
@@ -249,6 +252,8 @@ func (c *Cmd) CmdStart() error {
 	// Start command.
 	err = c.Cmd.Start()
 	if err != nil {
+		c.ExitError = err
+		c.GetExitCode()
 		return err
 	}
 
@@ -269,42 +274,6 @@ func (c *Cmd) CmdStart() error {
 
 	scanWrite(c, stdoutPipe, &c.Stdout, c.StdoutEnc, c.StdoutPrint)
 	scanWrite(c, stderrPipe, &c.Stderr, c.StderrEnc, c.StderrPrint)
-
-	// if c.StdoutEnc == nil {
-	// 	c.wg.Add(1)
-	// 	go func() {
-	// 		defer c.wg.Done()
-	// 		ScanWrite(bufio.NewScanner(c.StdoutPipe), &c.Stdout)
-	// ScanPrintStdout(bufio.NewScanner(io.TeeReader(c.StdoutPipe, &c.Stdout)), c.StdoutPrint)
-	// 	}()
-	// } else {
-	// 	c.wg.Add(1)
-	// 	go func() {
-	// 		defer c.wg.Done()
-	// 		ScanWrite(bufio.NewScanner(transform.NewReader(c.StdoutPipe, c.StdoutEnc)), &c.Stdout)
-	// 		// ScanPrintStdout(bufio.NewScanner(io.TeeReader(transform.NewReader(c.StdoutPipe, c.StdoutEnc), &c.Stdout)), c.StdoutPrint)
-	// 	}()
-	// }
-
-	// if c.StderrEnc == nil {
-	// 	c.wg.Add(1)
-	// 	go func() {
-	// 		defer c.wg.Done()
-	// 		ScanWrite(bufio.NewScanner(c.StderrPipe), &c.Stderr)
-	// 		// ScanPrintStderr(bufio.NewScanner(io.TeeReader(c.StderrPipe, &c.Stderr)), c.StderrPrint)
-	// 	}()
-	// } else {
-	// 	c.wg.Add(1)
-	// 	go func() {
-	// 		defer c.wg.Done()
-	// 		ScanWrite(bufio.NewScanner(transform.NewReader(c.StderrPipe, c.StderrEnc)), &c.Stderr)
-	// 		// ScanPrintStderr(bufio.NewScanner(io.TeeReader(transform.NewReader(c.StderrPipe, c.StderrEnc), &c.Stderr)), c.StderrPrint)
-	// 	}()
-	// }
-
-	if c.CmdLine == "" {
-		c.CmdLine = strings.Join(c.Cmd.Args, " ")
-	}
 
 	return nil
 }
@@ -330,14 +299,19 @@ func (c *Cmd) CmdRun() error {
 	return nil
 }
 
-// GetExitCode return command ExitCode.
+// GetExitCode set command ExitCode.
 func (c *Cmd) GetExitCode() {
+
+	c.ExitCode = 1
+
 	if c.ExitError != nil {
-		if err, ok := c.ExitError.(*exec.ExitError); ok {
-			if s, ok := err.Sys().(syscall.WaitStatus); ok {
-				c.ExitCode = s.ExitStatus()
+		if c.Cmd.ProcessState != nil {
+			if status, ok := c.Cmd.ProcessState.Sys().(syscall.WaitStatus); ok {
+				c.ExitCode = status.ExitStatus()
 			}
 		}
+	} else {
+		c.ExitCode = 0
 	}
 }
 
